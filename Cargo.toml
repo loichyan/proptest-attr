@@ -1,0 +1,21 @@
+[package]
+name = "proptest-attr"
+version = "0.0.0"
+authors = ["Loi Chyan <loichyan@foxmail.com>"]
+license = "MIT OR Apache-2.0"
+edition = "2021"
+rust-version = "1.65"
+
+description = "An experimental attribute macro for proptest"
+repository = "https://github.com/loichyan/proptest-attr"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
+
+[dev-dependencies]
+proptest = "1.5"
