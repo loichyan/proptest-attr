@@ -1,14 +1,14 @@
-#[proptest_attr::property_test]
-fn test_property_test(s: of!("yyy")) {
+#[proptest_attr::property_test(s in "yyy")]
+fn test_property_test() {
     let _ = s;
 }
 
-#[proptest_attr::test]
-fn test_test(s: of!("yyy")) {
+#[proptest_attr::test(s in "yyy")]
+fn test_test() {
     let _ = s;
 }
 
-#[proptest_attr::compose]
-fn test_compose(s: of!("yyy")) -> String {
+#[proptest_attr::compose(s in "yyy")]
+fn test_compose() -> String {
     s
 }

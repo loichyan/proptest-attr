@@ -2,11 +2,7 @@ use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
-use syn::{
-    Expr, FnArg, Ident, ItemFn, Pat, PatType, ReturnType, Signature, Token, Type, TypeMacro,
-};
-
-use crate::util::QuoteWith;
+use syn::{Expr, FnArg, Ident, ItemFn, Pat, ReturnType, Signature, Token, Type};
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum MacroKind {
@@ -20,7 +16,7 @@ pub(crate) fn expand(
     attr: proc_macro::TokenStream,
     item: proc_macro::TokenStream,
 ) -> syn::Result<TokenStream> {
-    let ProptestArg { config, mut params } =
+    let ProptestArg { config, params } =
         Parser::parse(|input: ParseStream| parse_attr(kind, input), attr)?;
     let ItemFn {
         attrs,
@@ -30,41 +26,24 @@ pub(crate) fn expand(
     } = &syn::parse(item)?;
     check_signature(kind, sig)?;
 
-    let mut param_types = vec![];
-    for arg in sig.inputs.iter() {
-        let arg = match arg {
-            FnArg::Receiver(r) => {
-                return Err(error!(r.self_token.span, "receiver is not allowed"));
-            }
-            FnArg::Typed(t) => t,
-        };
-        if let Some(param) = parse_magic_macro(arg)? {
-            params.push(param);
-        } else {
-            param_types.push(arg);
-        }
-    }
-
-    let Signature { ident, output, .. } = sig;
+    let Signature { ident, .. } = sig;
     if kind == MacroKind::Compose {
         let Signature {
             constness,
             asyncness,
             unsafety,
             abi,
+            inputs,
+            output,
             ..
         } = sig;
         let modifiers = quote!(#constness #asyncness #unsafety #abi);
         Ok(quote!(::proptest::prop_compose! {
             #(#attrs)*
-            #vis [#modifiers] fn #ident(#(#param_types,)*)
-                                       (#(#params,)*) #output #block
+            #vis [#modifiers] fn #ident(#inputs) (#(#params,)*) #output #block
         }))
     } else {
-        let config_attr = config
-            .as_ref()
-            .map(ProptestConfig::to_expr)
-            .map(|v| QuoteWith(move |tokens| quote!(#![proptest_config(#v)]).to_tokens(tokens)));
+        let config_attr = config.as_ref().map(|v| quote!(#![proptest_config(#v)]));
         let test_attr = if kind == MacroKind::Test {
             Some(quote!(#[test]))
         } else {
@@ -72,7 +51,7 @@ pub(crate) fn expand(
         };
         Ok(quote!(::proptest::proptest! {
             #config_attr #(#attrs)* #test_attr
-            #vis fn #ident(#(#param_types,)* #(#params,)*) #block
+            #vis fn #ident(#(#params,)*) #block
         }))
     }
 }
@@ -84,33 +63,20 @@ fn parse_attr(kind: MacroKind, input: ParseStream) -> syn::Result<ProptestArg> {
         if input.is_empty() {
             break;
         }
-        if input.peek2(Token![in]) {
-            // parse a strategy parameter
-            params.push(input.parse()?);
-        } else {
-            // or an argument with value
+        if input.peek2(Token![=]) || input.peek2(syn::token::Paren) {
+            // parse an argument with value
             let key = input.parse::<Ident>()?;
             if kind != MacroKind::Compose && key == "config" {
                 if config.is_some() {
-                    return Err(error!(key.span(), "duplicate `config` argument"));
+                    fail!(key.span(), "duplicate `config` argument");
                 }
-                let val = if input.peek(syn::token::Paren) {
-                    // syntax: `#[proptest(config(field1=value1, field2=value2))]`
-                    let content;
-                    syn::parenthesized!(content in input);
-                    content
-                        .parse_terminated(ConfigField::parse, Token![,])
-                        .map(ProptestConfig::Fields)?
-                } else if input.parse::<Option<Token![=]>>()?.is_some() {
-                    // compatible with old syntax
-                    input.parse::<Expr>().map(ProptestConfig::Expr)?
-                } else {
-                    return Err(error!(key.span(), "expected `= ...` or `(...)`"));
-                };
-                config = Some(val);
+                config = Some(input.parse()?);
             } else {
-                return Err(error!(key.span(), "unknown argument: {}", key));
+                fail!(key.span(), "unknown argument: {}", key);
             }
+        } else {
+            // or a strategy parameter
+            params.push(input.parse()?);
         }
         input.parse::<Option<Token![,]>>()?;
     }
@@ -124,55 +90,55 @@ fn check_signature(kind: MacroKind, sig: &Signature) -> syn::Result<()> {
         || sig.generics.where_clause.is_some()
         || sig.variadic.is_some()
     {
-        return Err(error!(span, "generics or variadic argument is not allowed"));
+        fail!(span, "generics or variadic argument is not allowed");
     }
+
     match kind {
         MacroKind::Compose if matches!(sig.output, ReturnType::Default) => {
-            Err(error!(span, "return type is required"))
+            for arg in sig.inputs.iter() {
+                if let FnArg::Receiver(r) = arg {
+                    fail!(r.self_token.span, "receiver is not allowed");
+                }
+            }
+            fail!(span, "return type is required");
         }
         MacroKind::Default | MacroKind::Test
             if sig.abi.is_some()
                 || sig.asyncness.is_some()
                 || sig.constness.is_some()
                 || sig.unsafety.is_some()
+                || !sig.inputs.is_empty()
                 || !matches!(sig.output, ReturnType::Default) =>
         {
-            Err(error!(span, "modifiers or return type is not allowed"))
+            fail!(span, "modifiers, arguments or return type is not allowed");
         }
-        _ => Ok(()),
+        _ => {}
     }
+
+    Ok(())
 }
 
-// syntax: `of!(<strategy expression>)`
-fn parse_magic_macro(arg: &PatType) -> syn::Result<Option<Param>> {
-    let PatType { pat, ty, .. } = arg;
-    if let Type::Macro(TypeMacro { mac }) = &**ty {
-        if let Some(i) = mac.path.get_ident().filter(|&i| i == "of") {
-            return Ok(Some(Param {
-                pat: Clone::clone(&*pat),
-                // tell Rust to treat `of` as an `in` keyword
-                in_token: syn::token::In { span: i.span() },
-                strategy: syn::parse2(mac.tokens.clone())?,
-            }));
-        }
-    }
-    Ok(None)
-}
-
-pub(crate) struct ProptestArg {
+struct ProptestArg {
     pub config: Option<ProptestConfig>,
     pub params: Vec<Param>,
 }
 
-pub(crate) enum ProptestConfig {
-    Fields(Punctuated<ConfigField, Token![,]>),
-    Expr(Expr),
+#[allow(dead_code)]
+enum ProptestConfig {
+    Fields {
+        paren_token: syn::token::Paren,
+        fields: Punctuated<ConfigField, Token![,]>,
+    },
+    Expr {
+        eq_token: Token![=],
+        value: Expr,
+    },
 }
 
-impl ProptestConfig {
-    pub fn to_expr(&self) -> impl '_ + ToTokens {
-        QuoteWith(move |tokens| match self {
-            Self::Fields(fields) => {
+impl ToTokens for ProptestConfig {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        match self {
+            Self::Fields { fields, .. } => {
                 let fields = fields.iter();
                 quote!(proptest::test_runner::Config {
                     #(#fields,)*
@@ -180,12 +146,33 @@ impl ProptestConfig {
                 })
                 .to_tokens(tokens);
             }
-            Self::Expr(e) => e.to_tokens(tokens),
-        })
+            Self::Expr { value, .. } => value.to_tokens(tokens),
+        }
     }
 }
 
-pub(crate) struct ConfigField {
+impl Parse for ProptestConfig {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        if input.peek(syn::token::Paren) {
+            // syntax: `#[proptest(config(field1=value1, field2=value2))]`
+            let content;
+            Ok(ProptestConfig::Fields {
+                paren_token: syn::parenthesized!(content in input),
+                fields: content.parse_terminated(ConfigField::parse, Token![,])?,
+            })
+        } else if input.peek(Token![=]) {
+            // compatible with old syntax
+            Ok(ProptestConfig::Expr {
+                eq_token: input.parse::<Token![=]>()?,
+                value: input.parse()?,
+            })
+        } else {
+            fail!(input.span(), "expected `(...)` or `= ...`");
+        }
+    }
+}
+
+struct ConfigField {
     pub ident: Ident,
     pub eq_token: Token![=],
     pub value: Expr,
@@ -204,31 +191,69 @@ impl Parse for ConfigField {
 impl ToTokens for ConfigField {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         self.ident.to_tokens(tokens);
-        new_token!(self.eq_token.span, :).to_tokens(tokens);
+        syn::token::Colon {
+            spans: self.eq_token.spans,
+        }
+        .to_tokens(tokens);
         self.value.to_tokens(tokens);
     }
 }
 
-pub(crate) struct Param {
-    pub pat: Pat,
-    pub in_token: Token![in],
-    pub strategy: Expr,
+enum Param {
+    Expr {
+        pat: Pat,
+        in_token: Token![in],
+        strategy: Expr,
+    },
+    Any {
+        pat: Pat,
+        colon_token: Token![:],
+        ty: Type,
+    },
 }
 
 impl Parse for Param {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(Self {
-            pat: Pat::parse_single(input)?,
-            in_token: input.parse()?,
-            strategy: input.parse()?,
-        })
+        let pat = Pat::parse_single(input)?;
+        if let Some(in_token) = input.parse::<Option<Token![in]>>()? {
+            Ok(Self::Expr {
+                pat,
+                in_token,
+                strategy: input.parse()?,
+            })
+        } else if let Some(colon_token) = input.parse::<Option<Token![:]>>()? {
+            Ok(Self::Any {
+                pat,
+                colon_token,
+                ty: input.parse()?,
+            })
+        } else {
+            fail!(input.span(), "expected `in ...` or `: ...`");
+        }
     }
 }
 
 impl ToTokens for Param {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        self.pat.to_tokens(tokens);
-        self.in_token.to_tokens(tokens);
-        self.strategy.to_tokens(tokens);
+        match self {
+            Self::Expr {
+                pat,
+                in_token,
+                strategy,
+            } => {
+                pat.to_tokens(tokens);
+                in_token.to_tokens(tokens);
+                strategy.to_tokens(tokens);
+            }
+            Self::Any {
+                pat,
+                colon_token,
+                ty,
+            } => {
+                pat.to_tokens(tokens);
+                colon_token.to_tokens(tokens);
+                ty.to_tokens(tokens);
+            }
+        }
     }
 }
