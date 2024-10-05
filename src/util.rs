@@ -13,7 +13,7 @@ where
     }
 }
 
-macro_rules! syn_error {
+macro_rules! error {
     ($msg:literal $(,$args:expr)* $(,)?) => {
         syn_error!(::proc_macro2::Span::call_site(), $msg $(,$args)*)
     };
