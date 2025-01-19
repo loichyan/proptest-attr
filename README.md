@@ -4,8 +4,9 @@ An experimental attribute macro for [proptest](https://proptest-rs.github.io).
 
 > [!IMPORTANT]
 >
-> This is an experimental attribute macro. If possible, it will eventually be merged into the
-> proptest main repository.
+> The ability to specify custom strategies has been added in
+> [proptest#523](https://github.com/proptest-rs/proptest/pull/523), so this
+> project is deprecated and no longer maintained.
 
 ## ⚖️ License
 
