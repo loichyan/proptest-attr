@@ -101,7 +101,7 @@ fn check_signature(kind: MacroKind, sig: &Signature) -> syn::Result<()> {
                 }
             }
             fail!(span, "return type is required");
-        }
+        },
         MacroKind::Default | MacroKind::Test
             if sig.abi.is_some()
                 || sig.asyncness.is_some()
@@ -111,8 +111,8 @@ fn check_signature(kind: MacroKind, sig: &Signature) -> syn::Result<()> {
                 || !matches!(sig.output, ReturnType::Default) =>
         {
             fail!(span, "modifiers, arguments or return type is not allowed");
-        }
-        _ => {}
+        },
+        _ => {},
     }
 
     Ok(())
@@ -145,7 +145,7 @@ impl ToTokens for ProptestConfig {
                     ..::core::default::Default::default()
                 })
                 .to_tokens(tokens);
-            }
+            },
             Self::Expr { value, .. } => value.to_tokens(tokens),
         }
     }
@@ -244,7 +244,7 @@ impl ToTokens for Param {
                 pat.to_tokens(tokens);
                 in_token.to_tokens(tokens);
                 strategy.to_tokens(tokens);
-            }
+            },
             Self::Any {
                 pat,
                 colon_token,
@@ -253,7 +253,7 @@ impl ToTokens for Param {
                 pat.to_tokens(tokens);
                 colon_token.to_tokens(tokens);
                 ty.to_tokens(tokens);
-            }
+            },
         }
     }
 }

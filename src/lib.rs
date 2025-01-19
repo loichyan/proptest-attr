@@ -2,9 +2,8 @@
 mod util;
 mod proptest;
 
-use proc_macro::TokenStream;
-
 use self::proptest::MacroKind;
+use proc_macro::TokenStream;
 
 fn exec_proptest(kind: MacroKind, attr: TokenStream, item: TokenStream) -> TokenStream {
     proptest::expand(kind, attr, item)
